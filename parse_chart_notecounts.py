@@ -8,7 +8,7 @@ import ifstools
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-c", "--contents", help="Contents folder", required=True)
-parser.add_argument("-o", "--output", help="Json output", default="notecounts.json")
+parser.add_argument("-o", "--output", help="Json output", default="iidx-notecounts.json")
 args = parser.parse_args()
 
 sound_dir = Path(args.contents, "data", "sound")
@@ -17,6 +17,7 @@ if not sound_dir.is_dir():
     raise SystemExit(f"{sound_dir} does not exist")
 
 all_charts = {}
+total_chart_count = 0
 
 chart_labels = {
     0: "SPH",
@@ -33,13 +34,15 @@ chart_labels = {
 
 def load_chart_from_ifs(file):
     ifs = ifstools.IFS(file)
-    dot_one = ifs.tree.all_files[-1].load()
+    for f in ifs.tree.all_files:
+        if str(f).endswith(".1"):
+            dot_one = f.load()
+            break
     ifs.close()
     return dot_one
 
 
 def get_notecounts(f, mid):
-    print(mid)
     charts = {}
     for i in range(12):
         charts[i] = {}
@@ -54,6 +57,9 @@ def get_notecounts(f, mid):
             all_charts[mid][chart_labels[i]] = 0
             continue
 
+        global total_chart_count
+        total_chart_count += 1
+
         f.seek(charts[i]["offset"])
         realcount = 0
         while True:
@@ -64,39 +70,28 @@ def get_notecounts(f, mid):
                 realcount += 2 if value != 0 else 1
 
         all_charts[mid][chart_labels[i]] = realcount
+    print(mid, all_charts[mid])
 
 
 for dot_one in sound_dir.rglob("*.1"):
     mid = dot_one.stem
-    # ifs takes priority
     if Path(sound_dir, f"{mid}.ifs").is_file():
         continue
     with open(dot_one, "r+b") as f:
         get_notecounts(f, mid)
 
-for dot_ifs in sound_dir.glob("*.ifs"):
+for dot_ifs in sorted(sound_dir.glob("*.ifs"), reverse=True):
     mid = dot_ifs.stem
-    # -p0 last
     if mid.endswith("-p0"):
-        continue
+        mid = mid[:-3]
     try:
         f = load_chart_from_ifs(dot_ifs)
-    except OSError as e:
-        print("ERROR:", e, dot_ifs)
-        continue
-    get_notecounts(BytesIO(f), mid)
-
-for dot_ifs in sound_dir.glob("*-p0.ifs"):
-    mid = dot_ifs.stem[:-3]
-    try:
-        f = load_chart_from_ifs(dot_ifs)
+        get_notecounts(BytesIO(f), mid)
     except OSError as e:
         print("ERROR", e, dot_ifs)
-        continue
-    get_notecounts(BytesIO(f), mid)
 
 with open(Path(args.output), "w") as fp:
     dump(all_charts, fp, sort_keys=True, indent=4)
 
 print()
-print(f"{len(all_charts)} {args.output}")
+print(f"{total_chart_count} charts in {len(all_charts)} songs saved to {args.output}")
