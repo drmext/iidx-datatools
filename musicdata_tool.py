@@ -1,5 +1,4 @@
 import argparse
-import ctypes
 import json
 import struct
 
@@ -9,23 +8,23 @@ def read_string(infile, length, encoding="cp932"):
     try:
         return string_data.decode(encoding).strip("\0")
     except UnicodeDecodeError:
-        # Can't decode truncated string with half multibyte sequence appended (0x83)
-        return string_data[:-1].decode(encoding).strip("\0")
+        # 'cp932' codec can't decode byte 0x91 in position 63: incomplete multibyte sequence
+        return string_data[:-1].decode(encoding)
 
 
-def write_string(outfile, input, length, fill="\0", encoding="cp932"):
+def write_string(outfile, input, length, encoding="cp932"):
     string_data = input[:length].encode(encoding)
     outfile.write(string_data)
 
     if len(input) < length:
-        outfile.write("".join([fill] * (length - len(string_data))).encode("utf-8"))
+        outfile.write("".join(["\0"] * (length - len(string_data))).encode("utf-8"))
 
 
 def reader(data_ver, infile, song_count):
     song_entries = []
 
     for i in range(song_count):
-        if data_ver >= 32:
+        if data_ver >= 32 and data_ver != 80:
             title = read_string(infile, 0x100, encoding="utf-16-le")
             title_ascii = read_string(infile, 0x40)
             genre = read_string(infile, 0x80, encoding="utf-16-le")
@@ -44,10 +43,10 @@ def reader(data_ver, infile, song_count):
             texture_load,
             texture_list,
         ) = struct.unpack("<IIIII", infile.read(20))
-        if data_ver >= 32:
+        if data_ver >= 32 and data_ver != 80:
             texture_unk = struct.unpack("<I", infile.read(4))[0]
         font_idx, game_version = struct.unpack("<IH", infile.read(6))
-        if data_ver >= 32:
+        if data_ver >= 32 and data_ver != 80:
             (
                 other_folder,
                 bemani_folder,
@@ -58,9 +57,7 @@ def reader(data_ver, infile, song_count):
                 unk_folder3,
             ) = struct.unpack("<HHHHHHH", infile.read(14))
         else:
-            other_folder, bemani_folder, splittable_diff = struct.unpack(
-                "<HHH", infile.read(6)
-            )
+            other_folder, bemani_folder, splittable_diff = struct.unpack("<HHH", infile.read(6))
 
         if data_ver >= 27:
             (
@@ -125,7 +122,7 @@ def reader(data_ver, infile, song_count):
             SPL_ident = 48
             DPL_ident = 48
 
-        bga_delay = ctypes.c_short(struct.unpack("<H", infile.read(2))[0]).value
+        bga_delay = struct.unpack("<h", infile.read(2))[0]
 
         if data_ver <= 26 or data_ver == 80:
             unk_sect2 = infile.read(2)
@@ -192,14 +189,7 @@ def reader(data_ver, infile, song_count):
             "afp_data": afp_data,
         }
 
-        if data_ver >= 32:
-            #            if data_ver == 80:
-            #                unk = {
-            #                    "unk_sect1": unk_sect1.hex(),
-            #                    "unk_sect2": unk_sect2.hex(),
-            #                    "unk_sect3": unk_sect3.hex(),
-            #                    "unk_sect4": unk_sect4.hex(),
-            #                }
+        if data_ver >= 32 and data_ver != 80:
             unk = {
                 "unk_sect0": unk_sect0.hex(),
                 "texture_unk": texture_unk,
@@ -207,28 +197,7 @@ def reader(data_ver, infile, song_count):
                 "unk_folder1": unk_folder1,
                 "unk_folder2": unk_folder2,
                 "unk_folder3": unk_folder3,
-                #                "unk_sect1": unk_sect1.hex(),
-                #                "unk_sect2": unk_sect2.hex(),
-                #                "unk_sect3": unk_sect3.hex(),
-                #                "unk_sect4": unk_sect4.hex(),
             }
-            #            elif data_ver >= 27:
-            #                unk = {
-            #                    "unk_sect1": unk_sect1.hex(),
-            #                    "unk_sect4": unk_sect4.hex(),
-            #                }
-            #            elif data_ver == 26:
-            #                unk = {
-            #                    "unk_sect1": unk_sect1.hex(),
-            #                    "unk_sect2": unk_sect2.hex(),
-            #                    "unk_sect4": unk_sect4.hex(),
-            #                }
-            #            elif data_ver <= 25:
-            #                unk = {
-            #                    "unk_sect1": unk_sect1.hex(),
-            #                    "unk_sect2": unk_sect2.hex(),
-            #                }
-
             entries.update(unk)
 
         song_entries.append(entries)
@@ -237,30 +206,28 @@ def reader(data_ver, infile, song_count):
 
 
 def writer(data_ver, outfile, data):
-    DATA_VERSION = data_ver
-    MAX_ENTRIES = data_ver * 1000 + 1000
-    CUR_STYLE_ENTRIES = MAX_ENTRIES - 1000
+    cur_style_entries = data_ver * 1000
+    max_entries = cur_style_entries + 1000
+    entries_struct_format = "<i" if data_ver >= 32 and data_ver != 80 else "<h"
 
     # Write header
     outfile.write(b"IIDX")
     if data_ver >= 32:
-        outfile.write(struct.pack("<IHHI", DATA_VERSION, len(data), 0, MAX_ENTRIES))
+        outfile.write(struct.pack("<IHHI", data_ver, len(data), 0, max_entries))
     else:
-        outfile.write(struct.pack("<IHHI", DATA_VERSION, len(data), MAX_ENTRIES, 0))
+        outfile.write(struct.pack("<IHHI", data_ver, len(data), max_entries, 0))
 
     # Write song index table
     exist_ids = {}
     for i in range(len(data)):
         exist_ids[data[i]["song_id"]] = i
 
-    cur_song = 0
-    entries_struct_format = "<i" if data_ver >= 32 else "<h"
-
-    for i in range(MAX_ENTRIES):
+    current_song = 0
+    for i in range(max_entries):
         if i in exist_ids:
-            outfile.write(struct.pack(entries_struct_format, cur_song))
-            cur_song += 1
-        elif i >= CUR_STYLE_ENTRIES:
+            outfile.write(struct.pack(entries_struct_format, current_song))
+            current_song += 1
+        elif i >= cur_style_entries:
             outfile.write(struct.pack(entries_struct_format, 0))
         else:
             outfile.write(struct.pack(entries_struct_format, -1))
@@ -269,19 +236,12 @@ def writer(data_ver, outfile, data):
     for k in sorted(exist_ids.keys()):
         song_data = data[exist_ids[k]]
 
-        if data_ver >= 32:
+        if data_ver >= 32 and data_ver != 80:
             write_string(outfile, song_data["title"], 0x100, encoding="utf-16-le")
             write_string(outfile, song_data["title_ascii"], 0x40)
             write_string(outfile, song_data["genre"], 0x80, encoding="utf-16-le")
             write_string(outfile, song_data["artist"], 0x100, encoding="utf-16-le")
-            outfile.write(
-                bytes.fromhex(
-                    song_data.get(
-                        "unk_sect0",
-                        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-                    )
-                )
-            )
+            outfile.write(bytes.fromhex(song_data.get("unk_sect0", "00" * 0x100)))
         else:
             write_string(outfile, song_data["title"], 0x40)
             write_string(outfile, song_data["title_ascii"], 0x40)
@@ -298,12 +258,10 @@ def writer(data_ver, outfile, data):
                 song_data["texture_list"],
             )
         )
-        if data_ver >= 32:
+        if data_ver >= 32 and data_ver != 80:
             outfile.write(struct.pack("<I", song_data.get("texture_unk", 0)))
-        outfile.write(
-            struct.pack("<IH", song_data["font_idx"], song_data["game_version"])
-        )
-        if data_ver >= 32:
+        outfile.write(struct.pack("<IH", song_data["font_idx"], song_data["game_version"]))
+        if data_ver >= 32 and data_ver != 80:
             outfile.write(
                 struct.pack(
                     "<HHHHHHH",
@@ -358,29 +316,13 @@ def writer(data_ver, outfile, data):
             )
 
         if data_ver == 80:
-            outfile.write(
-                bytes.fromhex(
-                    "0000000000000100000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030000000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                )
-            )
-        elif data_ver >= 32:
-            outfile.write(
-                bytes.fromhex(
-                    "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                )
-            )
+            outfile.write(bytes.fromhex(f"{1:014}{2:08}{3:0248}{4:08}{3:0120}{4:08}{0:0246}"))
+        elif data_ver >= 32 and data_ver != 80:
+            outfile.write(bytes.fromhex(f"{0:01292}"))
         elif data_ver >= 27:
-            outfile.write(
-                bytes.fromhex(
-                    "00000000000001000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                )
-            )
+            outfile.write(bytes.fromhex(f"{1:014}{2:08}{3:0248}{4:08}{0:01014}"))
         else:
-            outfile.write(
-                bytes.fromhex(
-                    "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                )
-            )
+            outfile.write(bytes.fromhex(f"{0:0320}"))
 
         outfile.write(struct.pack("<II", song_data["song_id"], song_data["volume"]))
 
@@ -418,12 +360,12 @@ def writer(data_ver, outfile, data):
         outfile.write(struct.pack("<h", song_data["bga_delay"]))
 
         if data_ver <= 26 or data_ver == 80:
-            outfile.write(bytes.fromhex("0000"))
+            outfile.write(bytes.fromhex("00" * 2))
 
         write_string(outfile, song_data["bga_filename"], 0x20)
 
         if data_ver == 80:
-            outfile.write(bytes.fromhex("0000"))
+            outfile.write(bytes.fromhex("00" * 2))
 
         outfile.write(struct.pack("<I", song_data["afp_flag"]))
 
@@ -431,100 +373,16 @@ def writer(data_ver, outfile, data):
             for afp_data in song_data["afp_data"]:
                 outfile.write(bytes.fromhex(afp_data))
             if len(song_data["afp_data"]) == 9:
-                outfile.write(
-                    bytes.fromhex(
-                        "0000000000000000000000000000000000000000000000000000000000000000"
-                    )
-                )
-        elif len(song_data["afp_data"]) == 10 and data_ver <= 21:
+                outfile.write(bytes.fromhex("00" * 0x20))
+        else:
             for afp_data in song_data["afp_data"][:9]:
-                outfile.write(bytes.fromhex(afp_data))
-        elif len(song_data["afp_data"]) == 9 and data_ver <= 21:
-            for afp_data in song_data["afp_data"]:
                 outfile.write(bytes.fromhex(afp_data))
 
         if data_ver >= 26:
-            outfile.write(bytes.fromhex("00000000"))
+            outfile.write(bytes.fromhex("00" * 4))
 
 
-def course_reader(infile, total_entries):
-    course_entries = []
-
-    for i in range(total_entries):
-        is_DP, course_num, stages = struct.unpack("<HIH", infile.read(8))
-
-        stage_num = []
-        for i in range(0x20):
-            extract = struct.unpack("<I", infile.read(4))
-            if extract[0] != 0xFFFFFFFF:
-                stage_num.extend(extract)
-
-        song_id = []
-        for i in range(0x20):
-            extract = struct.unpack("<I", infile.read(4))
-            if extract[0] != 0xFFFFFFFF:
-                song_id.extend(extract)
-
-        song_diff = []
-        for i in range(0x20):
-            extract = struct.unpack("<I", infile.read(4))
-            if extract[0] != 0xFFFFFFFF:
-                song_diff.extend(extract)
-
-        course_entries.append(
-            {
-                "is_DP": is_DP,
-                "course_num": course_num,
-                "stages": stages,
-                "stage_num": stage_num,
-                "song_id": song_id,
-                "song_diff": song_diff,
-            }
-        )
-
-    return course_entries
-
-
-def course_writer(outfile, data, data_ver):
-    TOTAL_ENTRIES = len(data)
-
-    # Write header
-    outfile.write(b"IIDXDANE")
-    outfile.write(struct.pack("<III", data_ver, TOTAL_ENTRIES, 0))
-
-    # Write course entries
-    for song_data in data:
-        outfile.write(
-            struct.pack(
-                "<HIH", song_data["is_DP"], song_data["course_num"], song_data["stages"]
-            )
-        )
-
-        stage = 0
-
-        for i in range(0x20):
-            if i in range(song_data["stages"]):
-                outfile.write(struct.pack("<I", stage))
-                stage += 1
-            else:
-                outfile.write(struct.pack("<I", 0xFFFFFFFF))
-
-        for i in range(0x20):
-            if i in range(song_data["stages"]):
-                outfile.write(struct.pack("<I", song_data["song_id"][i]))
-                stage += 1
-            else:
-                outfile.write(struct.pack("<I", 0xFFFFFFFF))
-
-        for i in range(0x20):
-            if i in range(song_data["stages"]):
-                outfile.write(struct.pack("<I", song_data["song_diff"][i]))
-                stage += 1
-            else:
-                outfile.write(struct.pack("<I", 0xFFFFFFFF))
-
-
-handlers = {
+handlers = (
     20,  # TRICORO
     21,  # SPADA
     22,  # PENDUAL
@@ -539,39 +397,28 @@ handlers = {
     31,  # EPOLIS
     32,  # PINKY CRUSH
     80,  # INFINITAS
-}
+)
 
 
 def extract_file(input, output, in_memory=False):
     with open(input, "rb") as infile:
         if infile.read(4) != b"IIDX":
-            print("Invalid", input)
-            exit(-1)
+            raise SystemExit(f"Input file ({input}) is not valid")
 
         infile.seek(4, 0)
         data_ver = int.from_bytes(infile.read(4), "little")
+        entries_struct_format = "<i" if data_ver >= 32 and data_ver != 80 else "<h"
 
         if data_ver >= 32:
-            available_entries, unk4, total_entries = struct.unpack(
-                "<HHI", infile.read(8)
-            )
+            available_entries, unk4, total_entries = struct.unpack("<HHI", infile.read(8))
         else:
-            available_entries, total_entries, unk4 = struct.unpack(
-                "<HIH", infile.read(8)
-            )
+            available_entries, total_entries, unk4 = struct.unpack("<HIH", infile.read(8))
 
         song_ids = {}
         for i in range(total_entries):
-            if data_ver >= 32:
-                song_id = struct.unpack("<I", infile.read(4))[0]
-            else:
-                song_id = struct.unpack("<H", infile.read(2))[0]
+            song_id = struct.unpack(entries_struct_format, infile.read(struct.calcsize(entries_struct_format)))[0]
 
-            if (
-                song_id != 0xFFFF
-                or song_id != 0xFFFFFFFF
-                and (len(song_ids) == 0 or song_id != 0)
-            ):
+            if song_id != struct.pack(entries_struct_format, -1) and (len(song_ids) == 0 or song_id != 0):
                 song_ids[i] = song_id
 
         if data_ver in handlers:
@@ -591,8 +438,7 @@ def extract_file(input, output, in_memory=False):
                 ensure_ascii=False,
             )
         else:
-            print("Couldn't find a handler for this data version")
-            exit(-1)
+            raise SystemExit("Couldn't find a handler for this data version")
 
     return []
 
@@ -602,189 +448,57 @@ def create_file(input, output, data_version):
     data_ver = data.get("data_ver", data_version)
 
     if not data_ver:
-        print("Couldn't find data version")
-        exit(-1)
+        raise SystemExit("Couldn't find data version")
 
     if data_ver in handlers:
         writer(data_ver, open(output, "wb"), data["data"])
     else:
-        print("Couldn't find a handler for this data version")
-        exit(-1)
-
-
-def convert_file(input, output, data_version):
-    with open(input, "rb") as infile:
-        if infile.read(4) != b"IIDX":
-            print("Invalid", input)
-            exit(-1)
-
-        data_ver, available_entries, total_entries, unk4 = struct.unpack(
-            "<IHIH", infile.read(12)
-        )
-
-        song_ids = {}
-        for i in range(total_entries):
-            song_id = struct.unpack("<H", infile.read(2))[0]
-
-            if song_id != 0xFFFF and (len(song_ids) == 0 or song_id != 0):
-                song_ids[i] = song_id
-
-        if data_ver in handlers:
-            output_data = reader(data_ver, infile, available_entries)
-            writer(data_ver, open(output, "wb"), output_data)
-        else:
-            print("Couldn't find a handler for this input data version")
-            exit(-1)
+        raise SystemExit("Couldn't find a handler for this data version")
 
 
 def merge_files(input, basefile, output, diff=False):
-    with open(input, "rb") as infile:
-        if infile.read(4) != b"IIDX":
-            print("Invalid", input)
-            exit(-1)
-
-        infile.seek(4, 0)
-        data_ver = int.from_bytes(infile.read(4), "little")
-
-        if data_ver >= 32:
-            available_entries, unk4, total_entries = struct.unpack(
-                "<HHI", infile.read(8)
-            )
-        else:
-            available_entries, total_entries, unk4 = struct.unpack(
-                "<HIH", infile.read(8)
-            )
-
-        song_ids = {}
-        for i in range(total_entries):
-            if data_ver >= 32:
-                song_id = struct.unpack("<I", infile.read(4))[0]
-            else:
-                song_id = struct.unpack("<H", infile.read(2))[0]
-
-            if (
-                song_id != 0xFFFF
-                or song_id != 0xFFFFFFFF
-                and (len(song_ids) == 0 or song_id != 0)
-            ):
-                song_ids[i] = song_id
-
-        if data_ver in handlers:
-            old_data = reader(data_ver, infile, available_entries)
-        else:
-            print("Couldn't find a handler for this input data version")
-            exit(-1)
-
-    with open(basefile, "rb") as infile:
-        if infile.read(4) != b"IIDX":
-            print("Invalid", basefile)
-            exit(-1)
-
-        infile.seek(4, 0)
-        data_ver = int.from_bytes(infile.read(4), "little")
-
-        if data_ver >= 32:
-            available_entries, unk4, total_entries = struct.unpack(
-                "<HHI", infile.read(8)
-            )
-        else:
-            available_entries, total_entries, unk4 = struct.unpack(
-                "<HIH", infile.read(8)
-            )
-
-        song_ids = {}
-        for i in range(total_entries):
-            if data_ver >= 32:
-                song_id = struct.unpack("<I", infile.read(4))[0]
-            else:
-                song_id = struct.unpack("<H", infile.read(2))[0]
-
-            if (
-                song_id != 0xFFFF
-                or song_id != 0xFFFFFFFF
-                and (len(song_ids) == 0 or song_id != 0)
-            ):
-                song_ids[i] = song_id
-
-        if data_ver in handlers:
-            new_data = reader(data_ver, infile, available_entries)
-        else:
-            print("Couldn't find a handler for this input data version")
-            exit(-1)
+    old_data = extract_file(input, None, in_memory=True)
+    new_data = extract_file(basefile, None, in_memory=True)
 
     # Create list of
     exist_ids_new = {}
-    for song_data in new_data:
+    for song_data in new_data["data"]:
         exist_ids_new[song_data["song_id"]] = True
 
-    for song_data in old_data:
+    for song_data in old_data["data"]:
         if song_data["song_id"] not in exist_ids_new:
-            new_data.append(song_data)
+            new_data["data"].append(song_data)
 
-    writer(data_ver, open(output, "wb"), new_data)
+    writer(new_data["data_ver"], open(output, "wb"), new_data["data"])
 
     if diff:
-        new_data.clear()
+        new_data["data"].clear()
 
-        for song_data in old_data:
+        for song_data in old_data["data"]:
             if song_data["song_id"] not in exist_ids_new:
-                new_data.append(song_data)
+                new_data["data"].append(song_data)
 
-        writer(data_ver, open(output[:-4] + "_diff.bin", "wb"), new_data)
+        writer(new_data["data_ver"], open(output[:-4] + "_diff.bin", "wb"), new_data["data"])
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", help="Input file", required=True)
     parser.add_argument("--output", help="Output file", required=True)
-    parser.add_argument(
-        "--extract", help="Extraction mode", default=False, action="store_true"
-    )
-    parser.add_argument(
-        "--create", help="Creation mode", default=False, action="store_true"
-    )
-    parser.add_argument(
-        "--convert", help="Conversion mode", default=False, action="store_true"
-    )
-    parser.add_argument(
-        "--merge", help="Merge mode", default=False, action="store_true"
-    )
-    parser.add_argument(
-        "--data-version",
-        help="Force a data version (usedful for converts)",
-        default=None,
-        type=int,
-    )
-    parser.add_argument(
-        "--diff", help="Create diff file with merge", default=False, action="store_true"
-    )
+    parser.add_argument("--extract", help="Extraction mode", default=False, action="store_true")
+    parser.add_argument("--create", help="Creation mode", default=False, action="store_true")
+    parser.add_argument("--merge", help="Merge mode", default=False, action="store_true")
+    parser.add_argument("--diff", help="Create _diff.bin output with merge", default=False, action="store_true")
     args = parser.parse_args()
 
-    if (
-        args.create is False
-        and args.extract is False
-        and args.convert is False
-        and args.merge is False
-    ):
-        print("You must specify either --extract or --create or --convert or --merge")
-        exit(-1)
-
-    if args.convert is True:
-        if args.data_version is None:
-            print("You must specify a target --data-version with --convert")
-            exit(-1)
-        elif args.data_version not in handlers:
-            print("Don't know how to handle specified data version")
-            exit(-1)
+    if args.create is False and args.extract is False and args.merge is False:
+        raise SystemExit("You must specify either --extract or --create or --merge")
 
     if args.extract:
         extract_file(args.input, args.output)
 
     elif args.create:
-        create_file(args.input, args.output, args.data_version)
-
-    elif args.convert:
-        convert_file(args.input, args.output, args.data_version)
+        create_file(args.input, args.output, None)
 
     elif args.merge:
         merge_files(args.input, args.output, args.output, args.diff)
