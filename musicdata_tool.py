@@ -17,7 +17,12 @@ def reader(version, infile, song_count):
     all_song_entries = []
 
     for i in range(song_count):
-        if version >= 32 and version != 80:
+        if version == 80:
+            title = read_string(infile, 0x80)
+            title_ascii = read_string(infile, 0x40)
+            genre = read_string(infile, 0x80)
+            artist = read_string(infile, 0x80)
+        elif version >= 32:
             title = read_string(infile, 0x100, encoding="utf-16-le")
             title_ascii = read_string(infile, 0x40)
             genre = read_string(infile, 0x80, encoding="utf-16-le")
@@ -80,7 +85,7 @@ def reader(version, infile, song_count):
             DPL_level = 0
 
         if version == 80:
-            unk_sect1 = infile.read(0x146)
+            unk_sect1 = infile.read(0x2C6)
         elif version >= 27:
             unk_sect1 = infile.read(0x286)
         else:
@@ -222,7 +227,12 @@ def writer(version, outfile, data):
     for k in sorted(exist_ids):
         song_data = data[exist_ids[k]]
 
-        if version >= 32 and version != 80:
+        if version == 80:
+            write_string(outfile, song_data["title"], 0x80)
+            write_string(outfile, song_data["title_ascii"], 0x40)
+            write_string(outfile, song_data["genre"], 0x80)
+            write_string(outfile, song_data["artist"], 0x80)
+        elif version >= 32:
             write_string(outfile, song_data["title"], 0x100, encoding="utf-16-le")
             write_string(outfile, song_data["title_ascii"], 0x40)
             write_string(outfile, song_data["genre"], 0x80, encoding="utf-16-le")
@@ -302,7 +312,7 @@ def writer(version, outfile, data):
             )
 
         if version == 80:
-            outfile.write(bytes.fromhex(f"{1:014}{2:08}{3:0248}{4:08}{3:0120}{4:08}{0:0246}"))
+            outfile.write(bytes.fromhex(f"{1:014}{2:08}{3:0248}{4:08}{3:0120}{4:08}{0:01014}"))
         elif version >= 32:
             outfile.write(bytes.fromhex(f"{0:01292}"))
         elif version >= 27:
@@ -381,7 +391,7 @@ handlers = {
     32,  # PINKY CRUSH
     33,  # SPARKLE SHOWER
     34,  # ???
-    80,  # INFINITAS
+    80,  # INFINITAS 2026
 }
 
 
